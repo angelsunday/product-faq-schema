@@ -14,3 +14,6 @@ delete_option( 'pfs_options' );
 
 // Διαγραφή του meta "απενεργοποίηση ανά προϊόν" από όλα τα προϊόντα
 delete_post_meta_by_key( '_pfs_disable' );
+
+// Διαγραφή των χειροκίνητων FAQs από όλα τα προϊόντα
+delete_post_meta_by_key( '_pfs_custom_faqs' );

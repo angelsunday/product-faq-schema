@@ -276,6 +276,12 @@ function pfs_get_product_faqs( $post_id ) {
 		return array();
 	}
 
+	// Αν το προϊόν έχει δικές σου (χειροκίνητες) FAQs, χρησιμοποιούνται ΜΟΝΟ αυτές
+	$manual = get_post_meta( $post_id, '_pfs_custom_faqs', true );
+	if ( is_array( $manual ) && ! empty( $manual ) ) {
+		return $manual;
+	}
+
 	// Περιγραφή + σύντομη περιγραφή του προϊόντος
 	$html = $post->post_content . "\n" . $post->post_excerpt;
 
@@ -524,6 +530,117 @@ function pfs_save_meta( $post_id ) {
 	}
 }
 add_action( 'save_post_product', 'pfs_save_meta' );
+
+/* ------------------------------------------------------------------
+ * ΧΕΙΡΟΚΙΝΗΤΕΣ FAQs ΑΝΑ ΠΡΟΪΟΝ
+ * Αποθηκεύονται στο meta '_pfs_custom_faqs' ως λίστα από [ 'q' => ..., 'a' => ... ].
+ * ---------------------------------------------------------------- */
+
+function pfs_add_faqs_meta_box() {
+	add_meta_box( 'pfs_faqs_meta', 'FAQs προϊόντος (χειροκίνητες)', 'pfs_render_faqs_meta_box', 'product', 'normal', 'default' );
+}
+add_action( 'add_meta_boxes', 'pfs_add_faqs_meta_box' );
+
+/**
+ * Τυπώνει μία γραμμή (ερώτηση + απάντηση + κουμπί διαγραφής) της φόρμας.
+ */
+function pfs_render_faq_row( $q, $a ) {
+	echo '<div class="pfs-row" style="border:1px solid #ddd;border-radius:4px;padding:10px;margin-bottom:10px">';
+	echo '<p style="margin:0 0 6px"><input type="text" class="widefat" name="pfs_faq_q[]" placeholder="Ερώτηση" value="' . esc_attr( $q ) . '"></p>';
+	echo '<p style="margin:0 0 6px"><textarea class="widefat" rows="3" name="pfs_faq_a[]" placeholder="Απάντηση">' . esc_textarea( $a ) . '</textarea></p>';
+	echo '<button type="button" class="button-link button-link-delete pfs-remove-row">Διαγραφή</button>';
+	echo '</div>';
+}
+
+/**
+ * Το meta box: λίστα με τις αποθηκευμένες FAQs και κουμπί για νέα ερώτηση.
+ */
+function pfs_render_faqs_meta_box( $post ) {
+	// Nonce για ασφάλεια κατά την αποθήκευση
+	wp_nonce_field( 'pfs_save_faqs', 'pfs_faqs_nonce' );
+
+	$faqs = get_post_meta( $post->ID, '_pfs_custom_faqs', true );
+	if ( ! is_array( $faqs ) ) {
+		$faqs = array();
+	}
+
+	echo '<p class="description">Αν υπάρχουν FAQs εδώ, χρησιμοποιούνται μόνο αυτές. Αν η λίστα είναι κενή, το plugin φτιάχνει αυτόματες FAQs.</p>';
+
+	// Οι υπάρχουσες FAQs
+	echo '<div id="pfs-rows">';
+	foreach ( $faqs as $faq ) {
+		pfs_render_faq_row( $faq['q'], $faq['a'] );
+	}
+	echo '</div>';
+
+	echo '<p><button type="button" class="button" id="pfs-add-row">+ Προσθήκη ερώτησης</button></p>';
+
+	// Πρότυπο για νέα γραμμή. Το <template> δεν στέλνεται με τη φόρμα, μόνο αντιγράφεται από το JS.
+	echo '<template id="pfs-row-template">';
+	pfs_render_faq_row( '', '' );
+	echo '</template>';
+
+	// JavaScript: προσθήκη και διαγραφή γραμμών
+	?>
+	<script>
+	(function () {
+		var rows = document.getElementById('pfs-rows');
+		var tpl  = document.getElementById('pfs-row-template');
+
+		// Κλικ στο "+ Προσθήκη ερώτησης": αντιγράφουμε το πρότυπο στη λίστα
+		document.getElementById('pfs-add-row').addEventListener('click', function () {
+			rows.appendChild(tpl.content.cloneNode(true));
+		});
+
+		// Κλικ στο "Διαγραφή": αφαιρούμε τη γραμμή
+		rows.addEventListener('click', function (e) {
+			if (e.target.classList.contains('pfs-remove-row')) {
+				e.target.closest('.pfs-row').remove();
+			}
+		});
+	})();
+	</script>
+	<?php
+}
+
+/**
+ * Αποθήκευση των χειροκίνητων FAQs όταν σώζεται το προϊόν.
+ */
+function pfs_save_faqs_meta( $post_id ) {
+	// Έλεγχοι ασφαλείας: nonce, autosave, δικαιώματα
+	if ( ! isset( $_POST['pfs_faqs_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['pfs_faqs_nonce'] ) ), 'pfs_save_faqs' ) ) {
+		return;
+	}
+	if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+		return;
+	}
+	if ( ! current_user_can( 'edit_post', $post_id ) ) {
+		return;
+	}
+
+	// Οι ερωτήσεις και οι απαντήσεις έρχονται ως δύο παράλληλες λίστες
+	$questions = isset( $_POST['pfs_faq_q'] ) ? (array) wp_unslash( $_POST['pfs_faq_q'] ) : array();
+	$answers   = isset( $_POST['pfs_faq_a'] ) ? (array) wp_unslash( $_POST['pfs_faq_a'] ) : array();
+
+	$faqs = array();
+	foreach ( $questions as $i => $q ) {
+		$q = sanitize_text_field( (string) $q );
+		$a = isset( $answers[ $i ] ) ? sanitize_textarea_field( (string) $answers[ $i ] ) : '';
+
+		// Παραλείπουμε γραμμές με κενή ερώτηση ή κενή απάντηση
+		if ( '' === $q || '' === $a ) {
+			continue;
+		}
+		$faqs[] = array( 'q' => $q, 'a' => $a );
+	}
+
+	if ( ! empty( $faqs ) ) {
+		update_post_meta( $post_id, '_pfs_custom_faqs', $faqs );
+	} else {
+		delete_post_meta( $post_id, '_pfs_custom_faqs' ); // κενή λίστα => επιστροφή στις αυτόματες
+	}
+}
+add_action( 'save_post_product', 'pfs_save_faqs_meta' );
 
 /* ------------------------------------------------------------------
  * ΟΡΑΤΗ ΕΜΦΑΝΙΣΗ ΣΤΗ ΣΕΛΙΔΑ ΠΡΟΪΟΝΤΟΣ (WooCommerce tab)
