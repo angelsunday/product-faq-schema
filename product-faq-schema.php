@@ -13,9 +13,44 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Επιλέγει γλώσσα για τα templates: ελληνικά αν η γλώσσα του site είναι el, αλλιώς αγγλικά.
+ * Είναι ελληνικό το προϊόν; Καθορίζει τη γλώσσα των ερωτήσεων.
+ * Κοιτάμε το κείμενο του ίδιου του προϊόντος (τίτλος, περιγραφή, πεδία) και όχι τη γλώσσα του
+ * wp-admin, γιατί στον editor το get_locale() δίνει τη γλώσσα του διαχειριστή (π.χ. αγγλικά).
+ * Αν το κείμενο δεν αρκεί για απόφαση, χρησιμοποιείται η γλώσσα του site.
  */
-function pfs_is_greek() {
+function pfs_is_greek( $post_id = null ) {
+	static $cache = array(); // να μην ξαναϋπολογίζεται για το ίδιο προϊόν
+
+	if ( null === $post_id ) {
+		$post_id = get_the_ID();
+	}
+
+	if ( $post_id ) {
+		if ( isset( $cache[ $post_id ] ) ) {
+			return $cache[ $post_id ];
+		}
+
+		$post = get_post( $post_id );
+		if ( $post ) {
+			// Συγκεντρώνουμε όλο το κείμενο του προϊόντος
+			$text = $post->post_title . ' ' . $post->post_content . ' ' . $post->post_excerpt;
+			foreach ( array( 'product_ingredients', 'product_general_tips' ) as $key ) {
+				$value = get_post_meta( $post_id, $key, true );
+				$text .= is_string( $value ) ? ' ' . $value : '';
+			}
+
+			// Έστω ένα ελληνικό γράμμα => ελληνικό προϊόν
+			if ( preg_match( '/\p{Greek}/u', $text ) ) {
+				return $cache[ $post_id ] = true;
+			}
+			// Αρκετά λατινικά γράμματα και κανένα ελληνικό => αγγλικό προϊόν
+			if ( preg_match_all( '/\p{Latin}/u', $text ) > 40 ) {
+				return $cache[ $post_id ] = false;
+			}
+		}
+	}
+
+	// Δεν αρκεί το κείμενο: γλώσσα του site
 	return 0 === strpos( get_locale(), 'el' );
 }
 
@@ -27,8 +62,8 @@ function pfs_is_greek() {
  *
  * @return array Λίστα από [ 'q' => ..., 'a' => ... ]
  */
-function pfs_generate_faqs_from_text( $text, $name ) {
-	$gr = pfs_is_greek();
+function pfs_generate_faqs_from_text( $text, $name, $post_id = null ) {
+	$gr = pfs_is_greek( $post_id );
 
 	// Καθαρό κείμενο, χωρίς HTML και πολλαπλά κενά
 	$text = trim( preg_replace( '/\s+/u', ' ', wp_strip_all_tags( $text ) ) );
@@ -131,7 +166,7 @@ function pfs_get_template_faqs( $post_id ) {
 		return array();
 	}
 
-	$gr   = pfs_is_greek();
+	$gr   = pfs_is_greek( $post_id );
 	$name = $product->get_name();
 	$faqs = array();
 
@@ -228,7 +263,7 @@ function pfs_trim_answer( $text, $limit = 500 ) {
  * Η λίστα πεδίων μπορεί να αλλάξει με το φίλτρο 'pfs_custom_fields'.
  */
 function pfs_get_custom_field_faqs( $post_id, $name ) {
-	$gr = pfs_is_greek();
+	$gr = pfs_is_greek( $post_id );
 
 	// meta key => [ ερώτηση ελληνικά, ερώτηση αγγλικά ]
 	$fields = apply_filters(
@@ -307,7 +342,7 @@ function pfs_get_auto_faqs( $post_id ) {
 	// 1. Custom πεδία (συστατικά, χρήσιμες συμβουλές) και ερωτήσεις που παράγονται από το κείμενο
 	if ( pfs_get_option( 'use_generated' ) ) {
 		$faqs = pfs_get_custom_field_faqs( $post_id, $post->post_title );
-		$faqs = array_merge( $faqs, pfs_generate_faqs_from_text( $html, $post->post_title ) );
+		$faqs = array_merge( $faqs, pfs_generate_faqs_from_text( $html, $post->post_title, $post_id ) );
 	}
 
 	// 2. Templates WooCommerce (τιμή, διαθεσιμότητα, SKU...) για να συμπληρωθεί η λίστα
