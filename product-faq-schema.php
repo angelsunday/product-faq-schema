@@ -282,6 +282,20 @@ function pfs_get_product_faqs( $post_id ) {
 		return $manual;
 	}
 
+	// Αλλιώς οι αυτόματες FAQs
+	return pfs_get_auto_faqs( $post_id );
+}
+
+/**
+ * Οι αυτόματες FAQs ενός προϊόντος (χωρίς να λαμβάνονται υπόψη οι χειροκίνητες).
+ * Τη χρησιμοποιεί και το κουμπί "Φόρτωση αυτόματων FAQs" του meta box.
+ */
+function pfs_get_auto_faqs( $post_id ) {
+	$post = get_post( $post_id );
+	if ( ! $post ) {
+		return array();
+	}
+
 	// Περιγραφή + σύντομη περιγραφή του προϊόντος
 	$html = $post->post_content . "\n" . $post->post_excerpt;
 
@@ -573,7 +587,15 @@ function pfs_render_faqs_meta_box( $post ) {
 	}
 	echo '</div>';
 
-	echo '<p><button type="button" class="button" id="pfs-add-row">+ Προσθήκη ερώτησης</button></p>';
+	// Οι αυτόματες FAQs περνούν ως JSON στο κουμπί, ώστε το JS να τις βάζει στη λίστα για επεξεργασία
+	$auto = pfs_get_auto_faqs( $post->ID );
+
+	echo '<p>';
+	echo '<button type="button" class="button" id="pfs-add-row">+ Προσθήκη ερώτησης</button> ';
+	if ( ! empty( $auto ) ) {
+		echo '<button type="button" class="button" id="pfs-load-auto" data-faqs="' . esc_attr( wp_json_encode( $auto ) ) . '">Φόρτωση αυτόματων FAQs</button>';
+	}
+	echo '</p>';
 
 	// Πρότυπο για νέα γραμμή. Το <template> δεν στέλνεται με τη φόρμα, μόνο αντιγράφεται από το JS.
 	echo '<template id="pfs-row-template">';
@@ -591,6 +613,23 @@ function pfs_render_faqs_meta_box( $post ) {
 		document.getElementById('pfs-add-row').addEventListener('click', function () {
 			rows.appendChild(tpl.content.cloneNode(true));
 		});
+
+		// Κλικ στο "Φόρτωση αυτόματων FAQs": γεμίζουμε τη λίστα με τις αυτόματες, για να τις διορθώσεις
+		var loadBtn = document.getElementById('pfs-load-auto');
+		if (loadBtn) {
+			loadBtn.addEventListener('click', function () {
+				// Αν υπάρχουν ήδη γραμμές, ρωτάμε πριν προσθέσουμε κι άλλες
+				if (rows.children.length && !confirm('Η λίστα έχει ήδη FAQs. Να προστεθούν και οι αυτόματες;')) {
+					return;
+				}
+				JSON.parse(loadBtn.getAttribute('data-faqs')).forEach(function (faq) {
+					var row = tpl.content.cloneNode(true);
+					row.querySelector('input').value = faq.q;
+					row.querySelector('textarea').value = faq.a;
+					rows.appendChild(row);
+				});
+			});
+		}
 
 		// Κλικ στο "Διαγραφή": αφαιρούμε τη γραμμή
 		rows.addEventListener('click', function (e) {
