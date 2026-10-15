@@ -13,6 +13,44 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
+ * Καθαρίζει ένα κείμενο για χρήση σε FAQ: αφαιρεί tags, μετατρέπει entities (&amp; => &)
+ * και μαζεύει τα πολλαπλά κενά. Επιστρέφει πάντα string.
+ */
+function pfs_clean_text( $text ) {
+	if ( ! is_scalar( $text ) ) {
+		return '';
+	}
+
+	// Τα block tags (p, li, h2...) γίνονται κενό, ώστε οι λέξεις δύο στοιχείων να μην κολλάνε
+	$text = preg_replace( '#</?(?:p|div|li|ul|ol|h[1-6]|br|tr|td|table|blockquote)\b[^>]*>#i', ' ', (string) $text );
+	$text = html_entity_decode( wp_strip_all_tags( (string) $text ), ENT_QUOTES, 'UTF-8' );
+
+	// Αν το κείμενο δεν είναι έγκυρο UTF-8 το preg_replace επιστρέφει null: κρατάμε το αρχικό
+	$clean = preg_replace( '/\s+/u', ' ', $text );
+	return trim( null === $clean ? $text : $clean );
+}
+
+/**
+ * Κρατά μόνο έγκυρες FAQs: πίνακες με μη κενά κείμενα 'q' και 'a'. Προστατεύει από αλλοιωμένα
+ * δεδομένα (π.χ. meta που άλλαξε χειροκίνητα ή από άλλο plugin).
+ */
+function pfs_clean_faqs( $faqs ) {
+	$out = array();
+	if ( ! is_array( $faqs ) ) {
+		return $out;
+	}
+	foreach ( $faqs as $faq ) {
+		if ( ! is_array( $faq ) || ! isset( $faq['q'], $faq['a'] ) || ! is_string( $faq['q'] ) || ! is_string( $faq['a'] ) ) {
+			continue;
+		}
+		if ( '' !== trim( $faq['q'] ) && '' !== trim( $faq['a'] ) ) {
+			$out[] = array( 'q' => $faq['q'], 'a' => $faq['a'] );
+		}
+	}
+	return $out;
+}
+
+/**
  * Είναι ελληνικό το προϊόν; Καθορίζει τη γλώσσα των ερωτήσεων.
  * Σειρά απόφασης: 1) γλώσσα WPML του προϊόντος, 2) κείμενο του προϊόντος (τίτλος, περιγραφή, πεδία),
  * 3) γλώσσα του site. Δεν χρησιμοποιούμε τη γλώσσα του wp-admin, γιατί στον editor το
@@ -74,14 +112,22 @@ function pfs_is_greek( $post_id = null ) {
 function pfs_generate_faqs_from_text( $text, $name, $post_id = null ) {
 	$gr = pfs_is_greek( $post_id );
 
+	// Χωρίς όνομα προϊόντος οι ερωτήσεις δεν έχουν νόημα
+	if ( '' === $name ) {
+		return array();
+	}
+
 	// Καθαρό κείμενο, χωρίς HTML και πολλαπλά κενά
-	$text = trim( preg_replace( '/\s+/u', ' ', wp_strip_all_tags( $text ) ) );
+	$text = pfs_clean_text( $text );
 	if ( mb_strlen( $text ) < 40 ) {
 		return array();
 	}
 
-	// Σπάσιμο σε προτάσεις (τελεία, θαυμαστικό, ερωτηματικό)
+	// Σπάσιμο σε προτάσεις (τελεία, θαυμαστικό, ερωτηματικό). Αν αποτύχει, δεν υπάρχουν προτάσεις.
 	$sentences = preg_split( '/(?<=[.!?;])\s+/u', $text, -1, PREG_SPLIT_NO_EMPTY );
+	if ( ! is_array( $sentences ) || empty( $sentences ) ) {
+		return array();
+	}
 	$used      = array(); // προτάσεις που έχουν ήδη χρησιμοποιηθεί
 	$faqs      = array();
 
@@ -176,13 +222,24 @@ function pfs_get_template_faqs( $post_id ) {
 	}
 
 	$gr   = pfs_is_greek( $post_id );
-	$name = $product->get_name();
+	$name = pfs_clean_text( $product->get_name() );
 	$faqs = array();
 
 	// 1. Τιμή
 	if ( pfs_template_on( 'price' ) && '' !== $product->get_price() ) {
-		// wc_price επιστρέφει HTML, το καθαρίζουμε σε απλό κείμενο
-		$price = html_entity_decode( wp_strip_all_tags( wc_price( $product->get_price() ) ) );
+		if ( $product->is_type( 'variable' ) && (float) $product->get_variation_price( 'min', true ) !== (float) $product->get_variation_price( 'max', true ) ) {
+			// Μεταβλητό προϊόν με διαφορετικές τιμές: δείχνουμε το εύρος
+			$price = pfs_clean_text( wc_price( $product->get_variation_price( 'min', true ) ) . ' – ' . wc_price( $product->get_variation_price( 'max', true ) ) );
+		} else {
+			// Η τιμή όπως εμφανίζεται στο site (σύμφωνα με τη ρύθμιση φόρων του WooCommerce)
+			$price = pfs_clean_text( wc_price( wc_get_price_to_display( $product ) ) );
+		}
+
+		// Επίθημα τιμής του site, π.χ. "(χωρίς ΦΠΑ)", ώστε η απάντηση να λέει αυτό που βλέπει ο πελάτης
+		$suffix = pfs_clean_text( $product->get_price_suffix() );
+		if ( '' !== $suffix ) {
+			$price .= ' ' . $suffix;
+		}
 		$faqs[] = array(
 			'q' => $gr ? "Πόσο κοστίζει το {$name};" : "How much does {$name} cost?",
 			'a' => $gr ? "Η τιμή του {$name} είναι {$price}." : "The price of {$name} is {$price}.",
@@ -212,8 +269,19 @@ function pfs_get_template_faqs( $post_id ) {
 	}
 
 	// 4. Κατηγορία
-	$cats = wp_get_post_terms( $post_id, 'product_cat', array( 'fields' => 'names' ) );
-	if ( pfs_template_on( 'category' ) && ! is_wp_error( $cats ) && ! empty( $cats ) ) {
+	$terms       = wp_get_post_terms( $post_id, 'product_cat' );
+	$default_cat = (int) get_option( 'default_product_cat' );
+	$cats        = array();
+	if ( ! is_wp_error( $terms ) ) {
+		foreach ( $terms as $term ) {
+			// Παραλείπουμε την προεπιλεγμένη κατηγορία (π.χ. "Uncategorized"), δεν λέει τίποτα
+			if ( (int) $term->term_id === $default_cat || 0 === strpos( $term->slug, 'uncategorized' ) ) {
+				continue;
+			}
+			$cats[] = pfs_clean_text( $term->name );
+		}
+	}
+	if ( pfs_template_on( 'category' ) && ! empty( $cats ) ) {
 		$list   = implode( ', ', $cats );
 		$faqs[] = array(
 			'q' => $gr ? "Σε ποια κατηγορία ανήκει το {$name};" : "Which category does {$name} belong to?",
@@ -250,7 +318,7 @@ function pfs_get_template_faqs( $post_id ) {
  */
 function pfs_trim_answer( $text, $limit = 500 ) {
 	// Καθαρό κείμενο, χωρίς HTML και πολλαπλά κενά
-	$text = trim( preg_replace( '/\s+/u', ' ', wp_strip_all_tags( $text ) ) );
+	$text = pfs_clean_text( $text );
 	if ( mb_strlen( $text ) <= $limit ) {
 		return $text;
 	}
@@ -291,6 +359,10 @@ function pfs_get_custom_field_faqs( $post_id, $name ) {
 
 	$faqs = array();
 	foreach ( $fields as $key => $questions ) {
+		// Αγνοούμε ρυθμίσεις που δεν έχουν σωστή μορφή (π.χ. από λάθος στο φίλτρο)
+		if ( ! is_string( $key ) || ! is_array( $questions ) || count( $questions ) < 2 ) {
+			continue;
+		}
 		$value = get_post_meta( $post_id, $key, true );
 		if ( ! is_string( $value ) ) {
 			continue; // αγνοούμε πεδία που δεν είναι κείμενο
@@ -312,22 +384,29 @@ function pfs_get_custom_field_faqs( $post_id, $name ) {
 
 /**
  * Συγκεντρώνει τις FAQs ενός προϊόντος.
- * Σειρά: custom πεδία, ερωτήσεις από το κείμενο της περιγραφής, templates WooCommerce.
+ * Πρώτα οι χειροκίνητες· αν δεν υπάρχουν, οι αυτόματες (custom πεδία, κείμενο, templates WooCommerce).
  */
 function pfs_get_product_faqs( $post_id ) {
+	static $cache = array(); // να μην υπολογίζονται ξανά στην ίδια σελίδα (schema + tab + shortcode)
+
+	if ( isset( $cache[ $post_id ] ) ) {
+		return $cache[ $post_id ];
+	}
+
 	$post = get_post( $post_id );
 	if ( ! $post ) {
 		return array();
 	}
 
-	// Αν το προϊόν έχει δικές σου (χειροκίνητες) FAQs, χρησιμοποιούνται ΜΟΝΟ αυτές
-	$manual = get_post_meta( $post_id, '_pfs_custom_faqs', true );
-	if ( is_array( $manual ) && ! empty( $manual ) ) {
-		return $manual;
+	// Προϊόν με κωδικό πρόσβασης: δεν αποκαλύπτουμε το περιεχόμενό του (π.χ. μέσα στο schema)
+	if ( post_password_required( $post ) ) {
+		return $cache[ $post_id ] = array();
 	}
 
-	// Αλλιώς οι αυτόματες FAQs
-	return pfs_get_auto_faqs( $post_id );
+	// Αν το προϊόν έχει δικές σου (χειροκίνητες) FAQs, χρησιμοποιούνται ΜΟΝΟ αυτές
+	$manual = pfs_clean_faqs( get_post_meta( $post_id, '_pfs_custom_faqs', true ) );
+
+	return $cache[ $post_id ] = ( ! empty( $manual ) ? $manual : pfs_get_auto_faqs( $post_id ) );
 }
 
 /**
@@ -340,18 +419,18 @@ function pfs_get_auto_faqs( $post_id ) {
 		return array();
 	}
 
-	// Περιγραφή + σύντομη περιγραφή του προϊόντος
-	$html = $post->post_content . "\n" . $post->post_excerpt;
-
-	// Περνάμε το περιεχόμενο από το the_content ώστε να εκτελεστούν blocks/shortcodes
-	$html = apply_filters( 'the_content', $html );
+	// Περιγραφή + σύντομη περιγραφή του προϊόντος, ως κείμενο και χωρίς shortcodes.
+	// Δεν περνάμε το κείμενο από το φίλτρο the_content: άλλα plugins προσθέτουν εκεί δικό τους
+	// περιεχόμενο, και ένα shortcode (π.χ. [product_faq] μέσα στην περιγραφή) θα προκαλούσε ατέρμονη επανάληψη.
+	$html = strip_shortcodes( $post->post_content . "\n" . $post->post_excerpt );
+	$name = pfs_clean_text( $post->post_title );
 
 	$faqs = array();
 
 	// 1. Custom πεδία (συστατικά, χρήσιμες συμβουλές) και ερωτήσεις που παράγονται από το κείμενο
 	if ( pfs_get_option( 'use_generated' ) ) {
-		$faqs = pfs_get_custom_field_faqs( $post_id, $post->post_title );
-		$faqs = array_merge( $faqs, pfs_generate_faqs_from_text( $html, $post->post_title, $post_id ) );
+		$faqs = pfs_get_custom_field_faqs( $post_id, $name );
+		$faqs = array_merge( $faqs, pfs_generate_faqs_from_text( $html, $name, $post_id ) );
 	}
 
 	// 2. Templates WooCommerce (τιμή, διαθεσιμότητα, SKU...) για να συμπληρωθεί η λίστα
@@ -377,17 +456,20 @@ function pfs_output_schema() {
 		return;
 	}
 
+	// Το προϊόν της σελίδας (πιο αξιόπιστο από το get_the_ID() μέσα στο <head>)
+	$post_id = get_queried_object_id();
+
 	// Global διακόπτης από τις ρυθμίσεις
 	if ( ! pfs_get_option( 'enabled' ) ) {
 		return;
 	}
 
 	// Απενεργοποίηση ανά προϊόν (από το meta box)
-	if ( '1' === get_post_meta( get_the_ID(), '_pfs_disable', true ) ) {
+	if ( '1' === get_post_meta( $post_id, '_pfs_disable', true ) ) {
 		return;
 	}
 
-	$faqs = pfs_get_product_faqs( get_the_ID() );
+	$faqs = pfs_get_product_faqs( $post_id );
 	if ( empty( $faqs ) ) {
 		return;
 	}
@@ -411,9 +493,11 @@ function pfs_output_schema() {
 		'mainEntity' => $entities,
 	);
 
-	// wp_json_encode: σωστό escaping και UTF-8 (JSON_UNESCAPED_UNICODE για τα ελληνικά)
+	// wp_json_encode: σωστό escaping και UTF-8 (JSON_UNESCAPED_UNICODE για τα ελληνικά).
+	// Τα JSON_HEX_TAG / JSON_HEX_AMP μετατρέπουν τα < > & σε \u003C \u003E \u0026, ώστε κείμενο
+	// με "</script>" να μην μπορεί να κλείσει το <script> και να εκτελέσει κώδικα (XSS).
 	echo '<script type="application/ld+json">'
-		. wp_json_encode( $schema, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES )
+		. wp_json_encode( $schema, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP )
 		. '</script>' . "\n";
 }
 add_action( 'wp_head', 'pfs_output_schema', 20 );
@@ -437,6 +521,7 @@ function pfs_default_options() {
 		'tpl_category' => 1,
 		'tpl_dims'     => 1,
 		'max_faqs'     => 8,
+		'delete_data'  => 0, // διαγραφή όλων των δεδομένων όταν διαγραφεί το plugin
 	);
 }
 
@@ -460,13 +545,18 @@ function pfs_template_on( $key ) {
  * Τα checkboxes που δεν τσεκαρίστηκαν δεν στέλνονται, άρα γίνονται 0.
  */
 function pfs_sanitize_options( $input ) {
+	// Αν η τιμή δεν είναι πίνακας (αλλοιωμένο αίτημα), ξεκινάμε από κενά δεδομένα
+	if ( ! is_array( $input ) ) {
+		$input = array();
+	}
+
 	$clean    = array();
-	$checkbox = array( 'enabled', 'show_tab', 'use_generated', 'use_templates', 'tpl_price', 'tpl_stock', 'tpl_sku', 'tpl_category', 'tpl_dims' );
+	$checkbox = array( 'delete_data', 'enabled', 'show_tab', 'use_generated', 'use_templates', 'tpl_price', 'tpl_stock', 'tpl_sku', 'tpl_category', 'tpl_dims' );
 
 	foreach ( $checkbox as $key ) {
 		$clean[ $key ] = empty( $input[ $key ] ) ? 0 : 1;
 	}
-	$clean['max_faqs'] = isset( $input['max_faqs'] ) ? max( 0, (int) $input['max_faqs'] ) : 8;
+	$clean['max_faqs'] = isset( $input['max_faqs'] ) && is_scalar( $input['max_faqs'] ) ? max( 0, min( 50, (int) $input['max_faqs'] ) ) : 8;
 
 	return $clean;
 }
@@ -546,6 +636,13 @@ function pfs_render_settings_page() {
 						<p class="description">0 = χωρίς όριο.</p>
 					</td>
 				</tr>
+				<tr>
+					<th>Απεγκατάσταση</th>
+					<td>
+						<?php pfs_checkbox( 'delete_data', 'Διαγραφή όλων των δεδομένων (ρυθμίσεις και χειροκίνητες FAQs) όταν διαγραφεί το plugin' ); ?>
+						<p class="description">Αν δεν είναι τσεκαρισμένο, οι FAQs που έγραψες μένουν στη βάση ακόμα κι αν διαγράψεις το plugin.</p>
+					</td>
+				</tr>
 			</table>
 			<?php submit_button(); ?>
 		</form>
@@ -617,10 +714,8 @@ function pfs_render_faqs_meta_box( $post ) {
 	// Nonce για ασφάλεια κατά την αποθήκευση
 	wp_nonce_field( 'pfs_save_faqs', 'pfs_faqs_nonce' );
 
-	$faqs = get_post_meta( $post->ID, '_pfs_custom_faqs', true );
-	if ( ! is_array( $faqs ) ) {
-		$faqs = array();
-	}
+	// Μόνο έγκυρες γραμμές, ώστε αλλοιωμένα δεδομένα να μην προκαλούν σφάλματα
+	$faqs = pfs_clean_faqs( get_post_meta( $post->ID, '_pfs_custom_faqs', true ) );
 
 	echo '<p class="description">Αν υπάρχουν FAQs εδώ, χρησιμοποιούνται μόνο αυτές. Αν η λίστα είναι κενή, το plugin φτιάχνει αυτόματες FAQs.</p>';
 
@@ -707,8 +802,12 @@ function pfs_save_faqs_meta( $post_id ) {
 
 	$faqs = array();
 	foreach ( $questions as $i => $q ) {
-		$q = sanitize_text_field( (string) $q );
-		$a = isset( $answers[ $i ] ) ? sanitize_textarea_field( (string) $answers[ $i ] ) : '';
+		// Αγνοούμε οτιδήποτε δεν είναι κείμενο (π.χ. αν η φόρμα αλλοιωθεί)
+		if ( ! is_string( $q ) || ! isset( $answers[ $i ] ) || ! is_string( $answers[ $i ] ) ) {
+			continue;
+		}
+		$q = sanitize_text_field( $q );
+		$a = sanitize_textarea_field( $answers[ $i ] );
 
 		// Παραλείπουμε γραμμές με κενή ερώτηση ή κενή απάντηση
 		if ( '' === $q || '' === $a ) {
@@ -758,13 +857,15 @@ add_filter( 'woocommerce_product_tabs', 'pfs_add_product_tab' );
  * Χωρίς JavaScript οι απαντήσεις μένουν ορατές (progressive enhancement).
  */
 function pfs_render_faq_tab() {
-	$faqs    = pfs_get_product_faqs( get_the_ID() );
-	$post_id = get_the_ID();
+	static $instance = 0; // μοναδικά id ακόμα κι αν το accordion εμφανιστεί δύο φορές στη σελίδα
+	$instance++;
+
+	$faqs = pfs_get_product_faqs( get_the_ID() );
 
 	echo '<div class="pfs-faq">';
 	foreach ( $faqs as $i => $faq ) {
 		// Μοναδικό id ώστε το κουμπί να συνδέεται με το πάνελ του (προσβασιμότητα)
-		$panel_id = 'pfs-faq-' . $post_id . '-' . $i;
+		$panel_id = 'pfs-faq-' . $instance . '-' . $i;
 
 		echo '<div class="pfs-faq__item">';
 		echo '<button type="button" class="pfs-faq__q" aria-expanded="false" aria-controls="' . esc_attr( $panel_id ) . '">'
@@ -783,7 +884,7 @@ function pfs_render_faq_tab() {
  * CSS και JavaScript του accordion (φορτώνονται μόνο στις σελίδες προϊόντος).
  */
 function pfs_enqueue_assets() {
-	if ( ! is_singular( 'product' ) ) {
+	if ( ! is_singular( 'product' ) || ! pfs_get_option( 'enabled' ) ) {
 		return;
 	}
 
@@ -857,7 +958,8 @@ function pfs_faq_shortcode() {
 	$post_id = get_the_ID();
 
 	// Σεβόμαστε τον global διακόπτη και την απενεργοποίηση ανά προϊόν
-	if ( ! $post_id || ! pfs_get_option( 'enabled' ) ) {
+	// Μόνο σε προϊόντα (το shortcode σε άλλη σελίδα δεν τυπώνει τίποτα)
+	if ( ! $post_id || 'product' !== get_post_type( $post_id ) || ! pfs_get_option( 'enabled' ) ) {
 		return '';
 	}
 	if ( '1' === get_post_meta( $post_id, '_pfs_disable', true ) ) {
