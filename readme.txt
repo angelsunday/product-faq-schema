@@ -17,6 +17,7 @@ Product FAQ Schema adds valid FAQPage structured data to each product page, with
 * Works with Greek and English (templates follow the site language).
 * Settings page: global toggle, sources, templates, maximum FAQs.
 * Per-product switch to disable the schema.
+* Manual FAQs per product, translatable with WPML (a product without manual FAQs falls back to automatic ones).
 
 == Installation ==
 
