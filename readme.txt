@@ -13,7 +13,7 @@ Automatically generates FAQPage JSON-LD schema for every WooCommerce product.
 
 Product FAQ Schema adds valid FAQPage structured data to each product page, with no manual work.
 
-* Builds questions from the product description and custom fields, plus automatic questions from WooCommerce data: price, availability, SKU, category, weight and dimensions.
+* Builds questions from the product description and custom fields, plus automatic questions from WooCommerce data: price, availability, SKU, weight and dimensions, and what the product can be combined with (from the description or related products).
 * Works with Greek and English (templates follow the site language).
 * Settings page: global toggle, sources, templates, maximum FAQs.
 * Per-product switch to disable the schema.

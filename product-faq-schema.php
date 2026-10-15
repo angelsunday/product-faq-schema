@@ -144,6 +144,11 @@ function pfs_generate_faqs_from_text( $text, $name, $post_id = null ) {
 			"How do I clean and care for {$name}?",
 		),
 		array(
+			'/(συνδυ[αά]ζ|συνδυασμ|ταιρι[αά]ζ\w*\s+με|combine|pairs? (?:well )?with|goes (?:well )?with|used together with|use (?:it )?with)/iu',
+			pfs_combine_question( $name, true ),
+			pfs_combine_question( $name, false ),
+		),
+		array(
 			'/(κατ[αά]λληλ|ιδανικ|χρησιμοποι|suitable for|ideal for|perfect for)/iu',
 			"Για ποια χρήση είναι κατάλληλο το {$name};",
 			"What is {$name} suitable for?",
@@ -206,8 +211,58 @@ function pfs_generate_faqs_from_text( $text, $name, $post_id = null ) {
 }
 
 /**
- * Φτιάχνει FAQs από δεδομένα WooCommerce (τιμή, διαθεσιμότητα, SKU, κατηγορία, βάρος, διαστάσεις).
- * Χρησιμοποιείται ΜΟΝΟ όταν δεν βρέθηκαν ερωτήσεις μέσα στο περιεχόμενο.
+ * Η ερώτηση "Με τι μπορώ να συνδυάσω το προϊόν;". Την ίδια ερώτηση χρησιμοποιούν και ο κανόνας
+ * κειμένου και τα σχετικά προϊόντα, ώστε να μην εμφανίζεται δύο φορές.
+ */
+function pfs_combine_question( $name, $gr ) {
+	return $gr ? "Με τι μπορώ να συνδυάσω το {$name};" : "What can I combine {$name} with?";
+}
+
+/**
+ * Ονόματα προϊόντων με τα οποία συνδυάζεται ένα προϊόν (μέχρι $limit).
+ * Πρώτα όσα έχει επιλέξει ο ίδιος ο ιδιοκτήτης (upsells, μετά cross-sells)·
+ * αν δεν υπάρχουν, τα σχετικά προϊόντα του WooCommerce (ίδιες κατηγορίες/ετικέτες).
+ */
+function pfs_get_combine_names( $product, $post_id, $limit = 3 ) {
+	$ids = array_merge( $product->get_upsell_ids(), $product->get_cross_sell_ids() );
+	if ( empty( $ids ) ) {
+		$ids = wc_get_related_products( $product->get_id(), $limit * 2 );
+	}
+
+	// WPML: κρατάμε τις εκδόσεις των προϊόντων στη γλώσσα του προϊόντος (αλλιώς το φίλτρο δεν αλλάζει τίποτα)
+	$wpml = apply_filters( 'wpml_post_language_details', null, $post_id );
+	$lang = ( is_array( $wpml ) && ! empty( $wpml['language_code'] ) ) ? $wpml['language_code'] : '';
+
+	$names = array();
+	foreach ( array_unique( $ids ) as $id ) {
+		if ( '' !== $lang ) {
+			$id = apply_filters( 'wpml_object_id', $id, 'product', false, $lang );
+		}
+		if ( ! $id || (int) $id === (int) $post_id ) {
+			continue; // δεν υπάρχει μετάφραση, ή είναι το ίδιο το προϊόν
+		}
+
+		// Μόνο προϊόντα που φαίνονται στο κατάστημα (δημοσιευμένα, όχι κρυφά)
+		$related = wc_get_product( $id );
+		if ( ! $related || ! $related->is_visible() ) {
+			continue;
+		}
+
+		$name = pfs_clean_text( $related->get_name() );
+		if ( '' !== $name && ! in_array( $name, $names, true ) ) {
+			$names[] = $name;
+		}
+		if ( count( $names ) >= $limit ) {
+			break;
+		}
+	}
+
+	return $names;
+}
+
+/**
+ * Φτιάχνει FAQs από δεδομένα WooCommerce (τιμή, διαθεσιμότητα, SKU, συνδυασμοί, βάρος, διαστάσεις).
+ * Συμπληρώνει τη λίστα μετά τις ερωτήσεις από τα custom πεδία και το κείμενο.
  * Παραλείπει όποια ερώτηση δεν έχει δεδομένο, ώστε να μην βγαίνουν κενές απαντήσεις.
  */
 function pfs_get_template_faqs( $post_id ) {
@@ -268,25 +323,16 @@ function pfs_get_template_faqs( $post_id ) {
 		);
 	}
 
-	// 4. Κατηγορία
-	$terms       = wp_get_post_terms( $post_id, 'product_cat' );
-	$default_cat = (int) get_option( 'default_product_cat' );
-	$cats        = array();
-	if ( ! is_wp_error( $terms ) ) {
-		foreach ( $terms as $term ) {
-			// Παραλείπουμε την προεπιλεγμένη κατηγορία (π.χ. "Uncategorized"), δεν λέει τίποτα
-			if ( (int) $term->term_id === $default_cat || 0 === strpos( $term->slug, 'uncategorized' ) ) {
-				continue;
-			}
-			$cats[] = pfs_clean_text( $term->name );
+	// 4. Με τι συνδυάζεται: από τα προϊόντα που έχει επιλέξει ο ιδιοκτήτης ή από τα σχετικά προϊόντα
+	if ( pfs_template_on( 'combine' ) ) {
+		$combine = pfs_get_combine_names( $product, $post_id );
+		if ( ! empty( $combine ) ) {
+			$list   = implode( ', ', $combine );
+			$faqs[] = array(
+				'q' => pfs_combine_question( $name, $gr ),
+				'a' => $gr ? "Μπορείτε να συνδυάσετε το {$name} με: {$list}." : "You can combine {$name} with: {$list}.",
+			);
 		}
-	}
-	if ( pfs_template_on( 'category' ) && ! empty( $cats ) ) {
-		$list   = implode( ', ', $cats );
-		$faqs[] = array(
-			'q' => $gr ? "Σε ποια κατηγορία ανήκει το {$name};" : "Which category does {$name} belong to?",
-			'a' => $gr ? "Το {$name} ανήκει στην κατηγορία: {$list}." : "{$name} belongs to: {$list}.",
-		);
 	}
 
 	// 5. Βάρος και διαστάσεις (μόνο αν έχουν συμπληρωθεί)
@@ -438,6 +484,20 @@ function pfs_get_auto_faqs( $post_id ) {
 		$faqs = array_merge( $faqs, pfs_get_template_faqs( $post_id ) );
 	}
 
+	// Αφαιρούμε διπλότυπες ερωτήσεις και κρατάμε την πρώτη (π.χ. την απάντηση από το κείμενο
+	// αντί για τα σχετικά προϊόντα στην ερώτηση "Με τι μπορώ να συνδυάσω")
+	$seen   = array();
+	$unique = array();
+	foreach ( $faqs as $faq ) {
+		$key = mb_strtolower( $faq['q'] );
+		if ( isset( $seen[ $key ] ) ) {
+			continue;
+		}
+		$seen[ $key ] = true;
+		$unique[]     = $faq;
+	}
+	$faqs = $unique;
+
 	// Μέγιστος αριθμός FAQs (0 = χωρίς όριο)
 	$max = (int) pfs_get_option( 'max_faqs' );
 	if ( $max > 0 ) {
@@ -518,7 +578,7 @@ function pfs_default_options() {
 		'tpl_price'    => 1,
 		'tpl_stock'    => 1,
 		'tpl_sku'      => 1,
-		'tpl_category' => 1,
+		'tpl_combine'  => 1,
 		'tpl_dims'     => 1,
 		'max_faqs'     => 8,
 		'delete_data'  => 0, // διαγραφή όλων των δεδομένων όταν διαγραφεί το plugin
@@ -534,7 +594,7 @@ function pfs_get_option( $key ) {
 }
 
 /**
- * Είναι ενεργό ένα συγκεκριμένο template; (price, stock, sku, category, dims)
+ * Είναι ενεργό ένα συγκεκριμένο template; (price, stock, sku, combine, dims)
  */
 function pfs_template_on( $key ) {
 	return (bool) pfs_get_option( 'tpl_' . $key );
@@ -551,7 +611,7 @@ function pfs_sanitize_options( $input ) {
 	}
 
 	$clean    = array();
-	$checkbox = array( 'delete_data', 'enabled', 'show_tab', 'use_generated', 'use_templates', 'tpl_price', 'tpl_stock', 'tpl_sku', 'tpl_category', 'tpl_dims' );
+	$checkbox = array( 'delete_data', 'enabled', 'show_tab', 'use_generated', 'use_templates', 'tpl_price', 'tpl_stock', 'tpl_sku', 'tpl_combine', 'tpl_dims' );
 
 	foreach ( $checkbox as $key ) {
 		$clean[ $key ] = empty( $input[ $key ] ) ? 0 : 1;
@@ -624,7 +684,7 @@ function pfs_render_settings_page() {
 						pfs_checkbox( 'tpl_price', 'Τιμή' );
 						pfs_checkbox( 'tpl_stock', 'Διαθεσιμότητα' );
 						pfs_checkbox( 'tpl_sku', 'Κωδικός (SKU)' );
-						pfs_checkbox( 'tpl_category', 'Κατηγορία' );
+						pfs_checkbox( 'tpl_combine', 'Με τι συνδυάζεται (από την περιγραφή ή τα σχετικά προϊόντα)' );
 						pfs_checkbox( 'tpl_dims', 'Βάρος και διαστάσεις' );
 						?>
 					</td>
